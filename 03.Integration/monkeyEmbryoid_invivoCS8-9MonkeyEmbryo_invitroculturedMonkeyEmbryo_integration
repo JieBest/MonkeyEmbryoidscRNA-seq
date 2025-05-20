@@ -1,1 +1,760 @@
 
+library(Seurat)
+library(harmony)
+
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(SCpubr)
+library(reshape2)
+library(pheatmap)
+library(RColorBrewer)
+
+sc_list <- readRDS("../../cr6ncbi_d17tod28_nFatureRNA1000_Singlet_nCountRNA30000.rds")
+sc_list <- subset(sc_list, orig.ident %in% 
+                    c("d17_1_cr6","d18_1_cr6","d21_1_cr6","d22_1_cr6",
+                      "d23_1","d25_1_cr6","d25_2_cr6"))
+new <- sc_list
+new_counts <- new@assays$RNA@counts
+new_meta <- new@meta.data
+
+# load monkey in vivo data
+zhai <- readRDS("mfas_embryo_CS8_CS11_gse193007_56636cells_update.RDS")
+zhai <- subset(zhai, theiler_stage %in% c("CS8","CS9"))
+zhai_counts <- zhai@assays$RNA@counts
+zhai_meta <- zhai@meta.data
+
+# load monkey ex vivo data
+load("Figure2_Allcells.Rdata")
+gong <- Vitro
+rm(Vitro);gc()
+gong_counts <-  gong@assays$RNA@counts
+gong_meta <- gong@meta.data
+
+sharedGs <- Reduce(intersect,list(row.names(new_counts), row.names(zhai_counts),row.names(gong_counts)))
+
+new_counts <- new_counts[sharedGs,]
+zhai_counts <- zhai_counts[sharedGs,]
+gong_counts <- gong_counts[sharedGs,]
+
+new_meta_sub <- new_meta[,c(1,2,3,9)]
+colnames(new_meta_sub) <- c("sample","nCount_RNA","nFeature_RNA","annotation")
+new_meta_sub$study <- rep("blastoid",nrow(new_meta_sub))
+
+zhai_meta_sub <- zhai_meta[,c(1,2,3,10)]
+colnames(zhai_meta_sub) <- c("sample","nCount_RNA","nFeature_RNA","annotation")
+zhai_meta_sub$study <- rep("invivo",nrow(zhai_meta_sub))
+
+gong_meta_sub <- gong_meta[,c(4,2,3,5)]
+colnames(gong_meta_sub) <- c("sample","nCount_RNA","nFeature_RNA","annotation")
+gong_meta_sub$study <- rep("exvivo",nrow(gong_meta_sub))
+
+
+blastoid <- CreateSeuratObject(counts = new_counts,meta.data = new_meta_sub)
+blastoid$orig.ident <- blastoid$sample
+Idents(blastoid) <- 'orig.ident'
+
+invivo <- CreateSeuratObject(counts = zhai_counts,meta.data = zhai_meta_sub)
+
+exvivo <- CreateSeuratObject(counts = gong_counts,meta.data = gong_meta_sub)
+exvivo$orig.ident <- exvivo$sample
+Idents(exvivo) <- 'orig.ident'
+levels(exvivo) <- sort(unique(exvivo$orig.ident))
+
+sc_list =list(blastoid=blastoid, invivo=invivo, exvivo=exvivo)
+save(sc_list, file = "raw_mfas_blastoid_d17-d25-2nod22-2_invivoCS89_exvivo_sc_list.RData")
+
+
+rm(list=ls())
+load("raw_mfas_blastoid_d17-d25-2nod22-2_invivoCS89_exvivo_sc_list.RData")
+
+
+sc_list <- lapply(X = sc_list, FUN = function(x) {
+  x <- NormalizeData(x)
+  x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 3000)
+  return(x)
+})
+
+features <- SelectIntegrationFeatures(object.list = sc_list, nfeatures = 3000)
+sc_anchors <- FindIntegrationAnchors(object.list = sc_list, anchor.features = features)
+saveRDS(sc_anchors, file = "mfas_blastoid_d17-d25-2nod22-2_invivoCS89_exvivo_sc_anchors.RDS")
+
+# this command creates an 'integrated' data assay
+sc_combined <- IntegrateData(anchorset = sc_anchors)
+saveRDS(sc_combined,file="mfas_blastoid_d17-d25-2nod22-2_invivoCS89_exvivo_sc_combined0.RDS")
+
+
+setwd("/data/embryo_dev/myprocess/integrate_cr6ncbi_d17-1_d25-2_nod22-2/blastoidD17-1_D25-2_noD22-2_invivoCS89_exvivo")
+
+alldata <- readRDS("mfas_blastoid_d17-d25-2nod22-2_invivoCS89_exvivo_sc_combined0.RDS")
+
+alldata_meta <- alldata@meta.data
+
+load("/data/embryo_dev/myprocess/integrate_cr6ncbi_d17-1_d25-2_nod22-2/vstCCA/pc20/pc20_d17-1_d25-2_nod22-2_seuobj_withClusterInfo_meta.RData")
+#sc_combined_meta$integrated_snn_res.1 <- paste0("blastoid_", sc_combined_meta$integrated_snn_res.1)
+table(sc_combined_meta$integrated_snn_res.1 )
+
+alldata_meta$annotation[match(row.names(sc_combined_meta), row.names(alldata_meta))] <- as.character(sc_combined_meta$integrated_snn_res.1 )
+alldata_meta$annotation <- paste0(alldata_meta$study,"_", alldata_meta$annotation)
+table(alldata_meta$annotation)
+
+alldata$annotation <- alldata_meta$annotation
+
+rm(alldata_meta)
+
+# Scale the integrated data, perform PCA, and generate an elbow plot for dimensionality estimation
+alldata <- ScaleData(alldata)
+alldata <- RunPCA(object = alldata, npcs = 100)
+ElbowPlot(alldata, ndims = 100)
+ggsave(filename = "blastoid_invivoCS89_exvivo_ElbowPlot.png", width = 7.68, height = 3.98, bg = "white")
+
+# UMAP Plotting and Clustering
+# -----------------------------
+# Setting parameters for UMAP analysis
+pcause = 100  # Number of dimensions to consider before analysis
+alldata <- RunUMAP(object = alldata, dims = 1:pcause)
+#alldata <- RunTSNE(object = alldata, dims = 1:pcause)
+alldata <- FindNeighbors(object = alldata, dims = 1:pcause)
+
+alldata <- FindClusters(object = alldata, resolution = 0.4)
+
+toplist <- names(alldata$study[alldata$study == "blastoid"])
+
+p1 <- DimPlot(object = alldata, reduction = "umap", order = toplist, 
+              raster = F, group.by = "study", pt.size = 0.0001)
+p2 <- DimPlot(object = alldata, reduction = "umap", label = T,
+              raster = F, group.by = "integrated_snn_res.0.4", pt.size = 0.0001)
+pp <- p1+p2
+ggsave(pp, filename = "blastoidD17-1_D25-2_invivoCS89_exvivo_noharmony_res04.umap.png",
+       width = 12.69, height=4.89)
+
+
+save(alldata, file="blastoidD17-1_D25-2_invivoCS89_exvivo_noharmony_withCluster.RData")
+
+# Harmony Integration
+# -------------------
+# Running Harmony algorithm for data integration across different conditions
+pdf(file = "alldata_harmony_use.pdf", width = 8, height = 6)
+alldata_harmony <- RunHarmony(alldata, group.by.vars = "study", plot_convergence = TRUE)
+dev.off()
+
+rm(alldata);gc()
+
+# Plotting Harmony integrated data and saving the output
+
+DimPlot(object = alldata_harmony, raster = FALSE,  reduction = "harmony", group.by = "study", pt.size = 0.01)
+ggsave(filename = "alldata_harmony_cluster.png", width = 8, height = 6)
+
+# Further UMAP analysis on Harmony integrated data
+alldata_harmony <- alldata_harmony %>% RunUMAP(reduction = "harmony", dims = 1:30) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:30) %>%
+  FindClusters(resolution = 0.5) %>%
+  identity()
+
+
+# Saving UMAP plots of Harmony integrated data
+DimPlot(object = alldata_harmony, reduction = "umap", raster = F, label = TRUE, pt.size = 0.01)
+ggsave(filename = "alldata_harmony_cluster_colByRes05cluster.png", width = 8, height = 6)
+
+
+DimPlot(object = alldata_harmony, reduction = "umap",order = toplist, 
+        raster = F, group.by = "study", pt.size = 0.01)
+ggsave(filename = "alldata_harmony_cluster_colByStudy.png", width = 8, height = 6)
+
+
+alldata_harmony <- FindClusters(alldata_harmony,resolution = 0.8) %>% identity()
+DimPlot(object = alldata_harmony, reduction = "umap", 
+        raster = F, label = TRUE, pt.size = 0.01)
+ggsave(filename = "alldata_harmony_cluster_colByRes08cluster.png", width = 8, height = 6)
+
+
+alldata_harmony <- FindClusters(alldata_harmony,resolution = 0.9) %>% identity()
+DimPlot(object = alldata_harmony, reduction = "umap", 
+        raster = F, label = TRUE, pt.size = 0.01)
+ggsave(filename = "alldata_harmony_cluster_colByRes09cluster.png", width = 8, height = 6)
+
+alldata_harmony <- FindClusters(alldata_harmony,resolution = 1) %>% identity()
+DimPlot(object = alldata_harmony, reduction = "umap", 
+        raster = F, label = TRUE, pt.size = 0.01)
+ggsave(filename = "alldata_harmony_cluster_colByRes1cluster.png", width = 8, height = 6)
+
+
+options(max.print = 10000)
+table(alldata_harmony$annotation,alldata_harmony$integrated_snn_res.0.8)
+
+save(alldata_harmony, file="mfas_blastoid_D17-1-D25-2_invivoCS89_exvivo_alldata_harmony.RData")
+
+
+alldata_harmony_meta <- alldata_harmony@meta.data
+save(alldata_harmony_meta, file = "mfas_blastoid_D17-1-D25-2_invivoCS89_exvivo_alldata_harmony_metainfo.RData")
+
+library(SCpubr)
+studyClusters <- unique(alldata_harmony$annotation)
+for(i in 1:length(studyClusters)){
+  pp <- do_DimPlot(alldata_harmony, raster = F, group.by = "annotation",idents.keep = studyClusters[i],pt.size=0.001)
+  ggsave(pp ,filename=paste0("mfas_blastoid_D17-1-D25-2_invivoCS89_exvivo_alldata_harmony_",studyClusters[i],"_umap.png"), width = 8, height = 6)
+}
+
+res08Clusters <- unique(alldata_harmony$integrated_snn_res.0.8)
+for(i in 1:length(res08Clusters)){
+  pp <- do_DimPlot(alldata_harmony, raster = F, group.by = "integrated_snn_res.0.8",idents.keep = res08Clusters[i],pt.size=0.001)
+  ggsave(pp ,filename=paste0("mfas_blastoid_D17-1-D25-2_invivoCS89_exvivo_alldata_harmony_res08Cluster",res08Clusters[i],"_umap.png"), width = 8, height = 6)
+}
+
+save.image("blastoid_invivo_exvivo_integrated.RData")
+
+# Adjusting metadata for Harmony data
+alldata_harmony@meta.data$study <- factor(alldata_harmony@meta.data$study, levels = c("blastoid", "invivo", "exvivo"))
+toplist <- names(alldata_harmony$study[alldata_harmony$study == "blastoid"])
+
+# Customized UMAP plots with specific color schemes
+# Changing colors of the clusters and generating multiple UMAP plots
+pp <- DimPlot(object = alldata_harmony, reduction = "umap", cols = c("#2979A9",  "#A9A9A9", "#C04844"), raster = FALSE, order = toplist, group.by = "study", pt.size = 0.001) +labs(title = "")
+pp[[1]]$layers[[1]]$mapping$alpha= 0.7
+ggsave(pp, filename = "alldata_harmony_cluster_changecolor_threecolor1.pdf", width = 8, height = 6)
+ggsave(pp, filename = "alldata_harmony_cluster_changecolor_threecolor1.png", width = 8, height = 6)
+
+pp <- DimPlot(object = alldata_harmony, reduction = "umap", cols = c("#A9A9A9", "#2979A9", "#C04844"), raster = FALSE, order = toplist, group.by = "study", pt.size = 0.001) +labs(title = "")
+pp[[1]]$layers[[1]]$mapping$alpha= 0.7
+ggsave(pp, filename = "alldata_harmony_cluster_changecolor_threecolor2.pdf", width = 8, height = 6)
+ggsave(pp, filename = "alldata_harmony_cluster_changecolor_threecolor2.png", width = 8, height = 6)
+
+
+# pdf(file = "alldata_harmony_cluster_changecolor_threecolor3.pdf", width = 8, height = 6)
+# DimPlot(object = alldata_harmony, reduction = "umap", cols = c("#A9A9A9", "#A9A9A9", "#2979A9", "#C04844"), order = toplist, group.by = "datatype", pt.size = 0.01)
+# dev.off()
+
+
+
+# 20240828
+load("/data/embryo_dev/myprocess/integrate_cr6ncbi_d17-1_d25-2_nod22-2/blastoidD17-1_D25-2_noD22-2_invivoCS89_exvivo/mfas_blastoid_D17-1-D25-2_invivoCS89_exvivo_alldata_harmony.RData")
+setwd("/data/embryo_dev/myprocess/integrate_cr6ncbi_d17-1_d25-2_nod22-2/blastoidD17-1_D25-2_noD22-2_invivoCS89_exvivo/")
+DefaultAssay(alldata_harmony)
+
+load("/data/embryo_dev/myprocess/integrate_cr6ncbi_d17-1_d25-2_nod22-2/vstCCA/pc20/filtered/pc20_d17-1_d25-2_nod22-2_Filtered_sc2_seuObj.RData")
+newAnno <- sc2$pc20res1Clusters
+newAnno <- recode(newAnno, 
+                  "0"="Al", "1"="LP.Meso3", "2"="Al", "3"="Mes", "4"="LP.Meso1",
+                  "5"="ECT", "6"="Mes", "7"="LP.Meso2", "8"="Cardio.", "9"="Mes", 
+                  "10"="DE/VE", "11"="Epidermis", "12"="Amnion", "13"="Border", 
+                  "14"="NeuralPlate", 
+                  "16"="Hindgut", "17"="Mes", "18"="Nas.Meso", "19"="ys.Meso",
+                  "20"="EC", "21"="ys.Endo1", "22"="Foregut", "23"="ys.Endo2", "24"="ExE.Meso",
+                  "25"="PS", "26"="EPI", "27"="PGC", "28"="Blood","APS"="APS")
+newAnno <- factor(newAnno, levels = c("EPI","ECT","PS","PGC","APS",
+                                      "DE/VE","Foregut","Hindgut",
+                                      "ys.Endo1","ys.Endo2",
+                                      "Nas.Meso","LP.Meso1","LP.Meso2", "LP.Meso3",
+                                      "Cardio.",
+                                      "ExE.Meso","Mes","Al","ys.Meso",
+                                      "NeuralPlate","Border","Amnion","Epidermis",
+                                      "EC","Blood"))
+sc2$newAnno <- newAnno
+
+
+# table(alldata_harmony$study)
+# options(max.print = 1000000)
+# table(alldata_harmony$annotation, alldata_harmony$integrated_snn_res.0.8)
+# 
+# DefaultAssay(alldata_harmony) <- "integrated"
+# DotPlot(alldata_harmony, features = c("CER1","LEFTY1","OTX2","LHX1","HHEX","NODAL"), group.by = "annotation") + coord_flip() +
+#   theme(axis.text.x = element_text(angle = 45, hjust=1, vjust=1))+xlab(label = "")+ylab(label = "")
+
+alldata_harmony_meta <- alldata_harmony@meta.data
+sc2_meta <- sc2@meta.data
+rm(sc2, newAnno); gc()
+
+keepCells <- c(row.names(sc2_meta), row.names(alldata_harmony_meta)[alldata_harmony_meta$study%in%c("exvivo","invivo")])
+alldata_harmony_meta <- alldata_harmony_meta[keepCells,]
+alldata_harmony_meta$annotation[match(row.names(sc2_meta), row.names(alldata_harmony_meta))] <- paste0("blastoid_",sc2_meta$newAnno)
+table(alldata_harmony_meta$annotation)
+
+alldata_harmony <- subset(alldata_harmony, cells = keepCells)
+alldata_harmony$annotation <- alldata_harmony_meta$annotation
+
+options(max.print = 100000)
+table(alldata_harmony$annotation, alldata_harmony$integrated_snn_res.0.9)
+
+
+DimPlot(object = alldata_harmony, reduction = "umap", 
+        raster = F, label = TRUE, pt.size = 0.01)
+
+do_DimPlot(alldata_harmony, idents.keep = "invivo_Node", group.by = "annotation",
+           raster = F,  pt.size = 0.0001)
+
+
+mesoClusters <- c("blastoid_EPI","blastoid_PS","blastoid_APS","blastoid_Nas.Meso",
+                  "blastoid_LP.Meso1","blastoid_LP.Meso2","blastoid_LP.Meso3",
+                  "blastoid_Mes","blastoid_ys.Meso","blastoid_Al","blastoid_Cardio.",
+                  "blastoid_ExE.Meso","blastoid_Blood","blastoid_EC",
+                  "invivo_EPI","invivo_PS","invivo_Caud.Meso","invivo_APS",
+                  "invivo_Nas.Meso","invivo_Mes","invivo_AM","invivo_LP.Meso",
+                  "invivo_AI","invivo_EC","invivo_ExE.Meso","invivo_ys.Meso2",
+                  "invivo_Pharyg.Meso","invivo_ys.Meso1","invivo_Node",
+                  "invivo_BP","invivo_Ery2","invivo_Ery1","invivo_Mac",
+                  "exvivo_EPI","exvivo_PS","exvivo_PM","exvivo_AM",
+                  "exvivo_LPM", "exvivo_EXM","exvivo_Cardiomyocyte","exvivo_Mes",
+                  "exvivo_Allantois","exvivo_ysMeso","exvivo_Blood","exvivo_Endo")
+meso_harmony <- subset(alldata_harmony, annotation %in% mesoClusters)
+
+save(meso_harmony, file="mesoderm_related_harmony.RData")
+#load("mesoderm_related_harmony.RData")
+
+meso_harmony <- meso_harmony %>% RunUMAP(reduction = "harmony", dims = 1:30) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:30) %>%
+  FindClusters(resolution = 0.8) %>% identity()
+
+DimPlot(meso_harmony, raster = F, pt.size = 0.0001, label = T)
+DimPlot(meso_harmony, raster = F, pt.size = 0.0001, label = T, split.by = "study") +NoLegend()
+
+options(max.print = 1000000)
+table(meso_harmony$annotation, meso_harmony$integrated_snn_res.0.8)
+
+
+save(meso_harmony, file="mesoderm_related_harmony_withCluster.RData")
+
+
+
+
+load("blastoidD17-1_D25-2_invivoCS89_exvivo_noharmony_withCluster.RData")
+# UMAP on integrated Assay
+p1 <- DimPlot(alldata, reduction = "pca",
+              raster = FALSE, 
+              cols = c("lightgrey","#2979A9","#B74643"),
+              pt.size = 0.001,group.by = "study") + labs(title = "") +NoLegend()
+p2 <- DimPlot(alldata, reduction = "umap",
+              raster = FALSE,
+              cols = c("lightgrey","#2979A9","#B74643"),
+              pt.size = 0.1,group.by = "study") + labs(title = "") +NoLegend()
+p3 <- DimPlot(alldata, reduction = "umap",
+              raster = FALSE, label = TRUE,
+              pt.size = 0.1,group.by = "integrated_snn_res.0.4") +NoLegend() + labs(title = "")
+pp <- cowplot::plot_grid(p1,p2,p3, ncol=3, rel_widths = c(1,1,1))
+ggsave(pp, filename="alldata_Integratedassay_pca_umap.pdf",
+       height=3.58, width=12.68)
+
+# PCA plot of RNA assay
+DefaultAssay(alldata) <- "RNA"
+alldata <- NormalizeData(alldata)
+alldata <- FindVariableFeatures(alldata, selection.method = "vst", nfeatures = 1000)
+alldata <- ScaleData(alldata)
+alldata <- RunPCA(alldata, npcs = 100)
+alldata <- RunUMAP(alldata,dims = 1:100, reduction = "pca")
+p4 <- DimPlot(alldata, reduction = "pca",
+              raster = FALSE, 
+              cols = c("lightgrey","#2979A9","#B74643"),
+              pt.size = 0.1,group.by = "study") + labs(title = "")
+p9 <- DimPlot(alldata, reduction = "umap",
+              raster = FALSE, 
+              cols = c("lightgrey","#2979A9","#B74643"),
+              pt.size = 0.1,group.by = "study") + labs(title = "")
+pp <- p4|p9
+ggsave(pp, filename="alldata_RNAassay_HVG1000_pca_umap.pdf",
+       height=3.48, width=9.98)
+
+
+alldata <- FindVariableFeatures(alldata, selection.method = "vst", nfeatures = 2000)
+alldata <- ScaleData(alldata)
+alldata <- RunPCA(alldata, npcs = 100)
+alldata <- RunUMAP(alldata,dims = 1:100, reduction = "pca")
+p4 <- DimPlot(alldata, reduction = "pca",
+              raster = FALSE, 
+              cols = c("lightgrey","#2979A9","#B74643"),
+              pt.size = 0.1,group.by = "study") + labs(title = "")
+p9 <- DimPlot(alldata, reduction = "umap",
+              raster = FALSE, 
+              cols = c("lightgrey","#2979A9","#B74643"),
+              pt.size = 0.1,group.by = "study") + labs(title = "")
+pp <- p4|p9
+ggsave(pp, filename="alldata_RNAassay_HVG2000_pca_umap.pdf",
+       height=3.48, width=9.98)
+
+
+alldata <- FindVariableFeatures(alldata, selection.method = "vst", nfeatures = 3000)
+alldata <- ScaleData(alldata)
+alldata <- RunPCA(alldata, npcs = 100)
+alldata <- RunUMAP(alldata,dims = 1:100, reduction = "pca")
+p4 <- DimPlot(alldata, reduction = "pca",
+              raster = FALSE, 
+              cols = c("lightgrey","#2979A9","#B74643"),
+              pt.size = 0.1,group.by = "study") + labs(title = "")
+p9 <- DimPlot(alldata, reduction = "umap",
+              raster = FALSE, 
+              cols = c("lightgrey","#2979A9","#B74643"),
+              pt.size = 0.1,group.by = "study") + labs(title = "")
+pp <- p4|p9
+ggsave(pp, filename="alldata_RNAassay_HVG3000_pca_umap.pdf",
+       height=3.48, width=9.98)
+
+
+
+alldata <- FindVariableFeatures(alldata, selection.method = "vst", nfeatures = 1500)
+alldata <- ScaleData(alldata)
+alldata <- RunPCA(alldata, npcs = 100)
+alldata <- RunUMAP(alldata,dims = 1:100, reduction = "pca")
+p4 <- DimPlot(alldata, reduction = "pca",
+              raster = FALSE, 
+              cols = c("lightgrey","#2979A9","#B74643"),
+              pt.size = 0.1,group.by = "study") + labs(title = "")
+p9 <- DimPlot(alldata, reduction = "umap",
+              raster = FALSE, 
+              cols = c("lightgrey","#2979A9","#B74643"),
+              pt.size = 0.1,group.by = "study") + labs(title = "")
+pp <- p4|p9
+ggsave(pp, filename="alldata_RNAassay_HVG1500_pca_umap.pdf",
+       height=3.48, width=9.98)
+
+
+
+alldata <- FindVariableFeatures(alldata, selection.method = "vst", nfeatures = 500)
+alldata <- ScaleData(alldata)
+alldata <- RunPCA(alldata, npcs = 100)
+alldata <- RunUMAP(alldata,dims = 1:100, reduction = "pca")
+p4 <- DimPlot(alldata, reduction = "pca",
+              raster = FALSE, 
+              cols = c("lightgrey","#2979A9","#B74643"),
+              pt.size = 0.1,group.by = "study") + labs(title = "")
+p9 <- DimPlot(alldata, reduction = "umap",
+              raster = FALSE, 
+              cols = c("lightgrey","#2979A9","#B74643"),
+              pt.size = 0.1,group.by = "study") + labs(title = "")
+pp <- p4|p9
+ggsave(pp, filename="alldata_RNAassay_HVG500_pca_umap.pdf",
+       height=3.48, width=9.98)
+
+
+# AMA additional features to plot
+dir.create("AMA_plot_250512")
+
+load("/data/embryo_dev/myprocess/integrate_cr6ncbi_d17-1_d25-2_nod22-2/blastoidD17-1_D25-2_noD22-2_invivoCS89_exvivo/mfas_blastoid_D17-1-D25-2_invivoCS89_exvivo_alldata_harmony.RData")
+setwd("/data/embryo_dev/myprocess/integrate_cr6ncbi_d17-1_d25-2_nod22-2/blastoidD17-1_D25-2_noD22-2_invivoCS89_exvivo/")
+DefaultAssay(alldata_harmony)
+
+load("/data/embryo_dev/myprocess/integrate_cr6ncbi_d17-1_d25-2_nod22-2/vstCCA/pc20/filtered/pc20_d17-1_d25-2_nod22-2_Filtered_sc2_seuObj.RData")
+newAnno <- sc2$pc20res1Clusters
+newAnno <- recode(newAnno, 
+                  "0"="Al", "1"="LP.Meso3", "2"="Al", "3"="Mes", "4"="LP.Meso1",
+                  "5"="ECT", "6"="Mes", "7"="LP.Meso2", "8"="Cardio.", "9"="Mes", 
+                  "10"="DE/VE", "11"="Epidermis", "12"="Amnion", "13"="Border", 
+                  "14"="NeuralPlate", 
+                  "16"="Hindgut", "17"="Mes", "18"="Nas.Meso", "19"="ys.Meso",
+                  "20"="EC", "21"="ys.Endo1", "22"="Foregut", "23"="ys.Endo2", "24"="ExE.Meso",
+                  "25"="PS", "26"="EPI", "27"="PGC", "28"="Blood","APS"="APS")
+newAnno <- factor(newAnno, levels = c("EPI","ECT","PS","PGC","APS",
+                                      "DE/VE","Foregut","Hindgut",
+                                      "ys.Endo1","ys.Endo2",
+                                      "Nas.Meso","LP.Meso1","LP.Meso2", "LP.Meso3",
+                                      "Cardio.",
+                                      "ExE.Meso","Mes","Al","ys.Meso",
+                                      "NeuralPlate","Border","Amnion","Epidermis",
+                                      "EC","Blood"))
+sc2$newAnno <- newAnno
+
+
+# table(alldata_harmony$study)
+# options(max.print = 1000000)
+# table(alldata_harmony$annotation, alldata_harmony$integrated_snn_res.0.8)
+# 
+# DefaultAssay(alldata_harmony) <- "integrated"
+# DotPlot(alldata_harmony, features = c("CER1","LEFTY1","OTX2","LHX1","HHEX","NODAL"), group.by = "annotation") + coord_flip() +
+#   theme(axis.text.x = element_text(angle = 45, hjust=1, vjust=1))+xlab(label = "")+ylab(label = "")
+
+alldata_harmony_meta <- alldata_harmony@meta.data
+sc2_meta <- sc2@meta.data
+rm(sc2, newAnno); gc()
+
+keepCells <- c(row.names(sc2_meta), row.names(alldata_harmony_meta)[alldata_harmony_meta$study%in%c("exvivo","invivo")])
+alldata_harmony_meta <- alldata_harmony_meta[keepCells,]
+alldata_harmony_meta$annotation[match(row.names(sc2_meta), row.names(alldata_harmony_meta))] <- paste0("blastoid_",sc2_meta$newAnno)
+table(alldata_harmony_meta$annotation)
+
+alldata_harmony <- subset(alldata_harmony, cells = keepCells)
+alldata_harmony$annotation <- alldata_harmony_meta$annotation
+
+toplist <- names(alldata_harmony$study[alldata_harmony$study == "invivo"])
+
+pp <- DimPlot(object = alldata_harmony, reduction = "umap", 
+              cols = c( "#2979A9", "#C04844","#A9A9A9"), raster = FALSE, 
+              order = toplist, group.by = "study", pt.size = 0.001) +labs(title = "")
+pp[[1]]$layers[[1]]$mapping$alpha= 0.7
+ggsave(pp, filename = "AMA_plot_250512/alldata_harmony_colorbyStudy_250512.pdf", width = 8, height = 6)
+ggsave(pp, filename = "AMA_plot_250512/alldata_harmony__colorbyStudy_250512.tiff", width = 8, height = 6)
+
+
+umap_dat <- data.frame(alldata_harmony@meta.data, Embeddings(alldata_harmony,reduction = "umap"))
+
+embryoid_dat <-umap_dat[umap_dat$study=="blastoid",]
+exvivo_dat <-umap_dat[umap_dat$study=="exvivo",]
+invivo_dat <-umap_dat[umap_dat$study=="invivo",]
+
+pp <- ggplot()+
+  geom_point(data=embryoid_dat,aes(x=UMAP_1,y=UMAP_2),color="grey",size=0.001,alpha = 0.7)+
+  geom_point(data=exvivo_dat,aes(x=UMAP_1,y=UMAP_2),color="#2979A9",size=0.001,alpha = 0.7)+
+  geom_point(data=invivo_dat,aes(x=UMAP_1,y=UMAP_2),color="#C04844",size=0.001,alpha = 0.7) +
+  scale_color_manual(values = c("blastoid"="lightgrey", "exvivo"="#2979A9", "invivo"="#C04844"))+
+  labs(x="UMAP1",y="UMAP2") + 
+  theme_classic()
+
+p1 <- ggplot()+
+  geom_point(data=embryoid_dat,aes(x=UMAP_1,y=UMAP_2),color="grey",size=0.001,alpha = 0.7)+
+  geom_point(data=exvivo_dat,aes(x=UMAP_1,y=UMAP_2),color="#2979A9",size=0.001,alpha = 0.7)+
+  scale_color_manual(values = c("blastoid"="lightgrey", "exvivo"="#2979A9"))+
+  labs(x="UMAP1",y="UMAP2") + 
+  theme_minimal()
+p2 <- ggplot()+
+  geom_point(data=embryoid_dat,aes(x=UMAP_1,y=UMAP_2),color="grey",size=0.001,alpha = 0.7)+
+  geom_point(data=invivo_dat,aes(x=UMAP_1,y=UMAP_2),color="#C04844",size=0.001,alpha = 0.7) +
+  scale_color_manual(values = c("blastoid"="lightgrey",  "invivo"="#C04844"))+
+  labs(x="UMAP1",y="UMAP2") + 
+  theme_minimal()
+p3 <- ggplot()+
+  geom_point(data=exvivo_dat,aes(x=UMAP_1,y=UMAP_2),color="#2979A9",size=0.001,alpha = 0.7)+
+  geom_point(data=invivo_dat,aes(x=UMAP_1,y=UMAP_2),color="#C04844",size=0.001,alpha = 0.5) +
+  scale_color_manual(values = c("exvivo"="#2979A9", "invivo"="#C04844"))+
+  labs(x="UMAP1",y="UMAP2") + 
+  theme_minimal()
+pp <- p1|p2|p3
+ggsave(pp, filename = "AMA_plot_250512/alldata_harmony_colorbyStudy_22_250512.pdf", width = 18, height = 5.38)
+ggsave(pp, filename = "AMA_plot_250512/alldata_harmony_colorbyStudy_22_250512.tiff", width = 18, height = 5.38)
+
+rm(umap_dat, embryoid_dat, exvivo_dat, invivo_dat); gc()
+
+
+# fill T exp value in alldata_harmony
+count.mtx <- GetAssayData(alldata_harmony,assay = "RNA", slot = "counts")
+# vitro data
+load("/data/embryo_public_data/mfas_in_vitro_cultured_embryos_scRNAseq/processed_data/Figure2_Allcells.Rdata")
+Vitro <- NormalizeData(Vitro)
+Vitro <- FindVariableFeatures(Vitro, selection.method = "vst", nfeatures = 3000)
+length(intersect(colnames(Vitro), colnames(count.mtx)))
+"TBXT" %in% row.names(Vitro)
+cells <- colnames(Vitro)
+new_counts_value <- FetchData(Vitro,vars = c("TBXT"), cells = cells,slot = "counts")
+count.mtx["T",cells] <- new_counts_value$TBXT
+alldata_harmony[["RNA"]] <- SetAssayData(
+  object = alldata_harmony[["RNA"]],
+  slot = "counts",
+  new.data = count.mtx
+)
+
+rm(count.mtx, cells, new_counts_value);gc()
+
+
+data.mtx <- GetAssayData(alldata_harmony,assay = "RNA", slot = "data")
+cells <- colnames(Vitro)
+new_data_value <- FetchData(Vitro,vars = c("TBXT"), cells = cells,slot = "data")
+data.mtx["T",cells] <- new_data_value$TBXT
+alldata_harmony[["RNA"]] <- SetAssayData(
+  object = alldata_harmony[["RNA"]],
+  slot = "data",
+  new.data = data.mtx
+)
+rm(data.mtx, cells, new_data_value);gc()
+rm(Vitro);gc()
+
+
+study2 <- alldata_harmony$study
+study2 <- recode(study2, 
+                 "blastoid"="Embryoid",
+                 "exvivo"="In Vitro",
+                 "invivo" ="In Vivo")
+alldata_harmony$study2 <- study2
+
+gset2 <- c("BMP4","FOXF1","EOMES", # Extraembryonic mesoderm
+           "KDR", "LMO1", "GATA1", "CDH5", # Hemogenic mesoderm
+           "MESP1", "TBX5", "NKX2-5", # Cardiac mesoderm
+           "TBX1","TCF21", # Craniopharyngeal mesoderm
+           "HAND1", "FOXF1", "PECAM1", # Lateral plate mesoderm
+           "OSR1","LHX1",  # Intermediate mesoderm
+           "TBX6","MSGN1", # Paraxial mesoderm
+           "NODAL", "SHH", "T", "FOXA2", "NOTO", # Node
+           "FOXA2", "SOX17", "CDH1", # Endoderm
+           "T", "SNAI1", "SNAI2", "EOMES", # Primitive streak
+           "SHH","T","FOXA2","NOTO", # Notochord
+           "CHRD","GSC","SIX3", # Prechordal plate
+           "WNT3A", "FGF8", "T", "SOX2", # Caudal Lateral Epiblast
+           "OTX2", "FGF5","POU5F1", # Epiblast
+           "SOX2", "OTX2", "POU3F1", "PAX6", # Neural Plate
+           "SOX2","T","NKX2-1", # Neuromesodermal progenitors,
+           "GSC","CHRD","FOXA2","CER1", #  APS
+           "NODAL","T","EOMES","WNT3" # Nas.Meso
+)
+DefaultAssay(alldata_harmony) <- "RNA"
+
+FeaturePlot(alldata_harmony, 
+            features = unique(gset2), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            ncol=6,
+            pt.size = 0.001)
+ggsave(filename = "./AMA_plot_250512/AMA_lineage_markers_alldata_harmony_umap.pdf",
+       width = 25, height = 22)
+
+# Extraembryonic mesoderm
+FeaturePlot(alldata_harmony, 
+            features = c("BMP4","FOXF1","EOMES"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+
+# Hemogenic mesoderm
+FeaturePlot(alldata_harmony, 
+            features = c("KDR", "LMO1", "GATA1", "CDH5"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+
+# Cardiac mesoderm
+FeaturePlot(alldata_harmony, 
+            features = c("MESP1", "TBX5", "NKX2-5"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+
+# Craniopharyngeal mesoderm
+FeaturePlot(alldata_harmony, 
+            features = c("TBX1","TCF21"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+
+# Lateral plate mesoderm
+FeaturePlot(alldata_harmony, 
+            features = c("HAND1", "FOXF1", "PECAM1"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+
+# Intermediate mesoderm
+FeaturePlot(alldata_harmony, 
+            features = c("OSR1","LHX1"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+
+# Paraxial mesoderm
+FeaturePlot(alldata_harmony, 
+            features = c("TBX6","MSGN1"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+
+# Node
+FeaturePlot(alldata_harmony, 
+            features = c("NODAL", "SHH", "T", "FOXA2", "NOTO","CHRD"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+
+# Notochrd
+FeaturePlot(alldata_harmony, 
+            features = c( "SHH", "T", "FOXA2", "NOTO"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+
+# Prechordal plate
+FeaturePlot(alldata_harmony, 
+            features = c( "CHRD", "GSC", "SIX3"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+
+
+# Endoderm
+FeaturePlot(alldata_harmony, 
+            features = c("FOXA2", "SOX17", "CDH1"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+
+# PS
+FeaturePlot(alldata_harmony, 
+            features = c("T", "SNAI1", "SNAI2","EOMES"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+
+# Caudal Lateral Epiblast
+FeaturePlot(alldata_harmony, 
+            features = c("WNT3A", "FGF8", "T","SOX2"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+
+# Epiblast: OTX2, FGF5, POU5F1
+FeaturePlot(alldata_harmony, 
+            features = c("OTX2", "FGF5", "POU5F1"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+
+# Neural Plate: SOX2, OTX2, POU3F1, PAX6
+FeaturePlot(alldata_harmony, 
+            features = c("SOX2", "OTX2", "POU3F1","PAX6"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+
+# Neuromesodermal progenitors (NMPs): SOX2, TBXT, NKX2.1
+FeaturePlot(alldata_harmony, 
+            features = c("SOX2", "T", "NKX2-1"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+
+# anterior primitive streak
+FeaturePlot(alldata_harmony, 
+            features = c("GSC", "CHRD", "FOXA2","CER1"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+
+# Nascent mesoderm
+FeaturePlot(alldata_harmony, 
+            features = c("NODAL", "T", "EOMES","WNT3"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+
+
+
+FeaturePlot(alldata_harmony, 
+            features = c("T", "EOMES", "MESP1","WNT3",
+                         "SNAI1","FOXA2","NOTO","GSC",
+                         "OTX2","CHRD","SHH","SIX3","CER1"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+ggsave(filename = "AMA_plot_250512/AMA_additional_analysis_dotplot.pdf",
+       width = 8.98,height = 28.89)
+
+
+
+FeaturePlot(alldata_harmony, 
+            features = c("ISL1", "CDX2", "TCF15","GATA4",
+                         "GATA6","TTR","MIXL1","IRX3",
+                         "SOX1"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+ggsave(filename = "AMA_plot_250512/AMA_additional_analysis_dotplot2.pdf",
+       width = 12.98,height = 28.89)
+
+FeaturePlot(alldata_harmony, 
+            features = c("T", "TBX6", "OSR1","FOXF1",
+                         "KDR","FOXA2","SOX17"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+ggsave(filename = "AMA_plot_250512/AMA_additional_analysis_FeaturePlot2_250517.pdf",
+       width = 12.98,height = 24.89)s
+
+FeaturePlot(alldata_harmony, 
+            features = c("TBX5", "NKX2-5", "TCF15","GATA4",
+                         "GATA6","MYL7"), 
+            cols = c("lightgrey","red"),
+            raster = FALSE,
+            split.by = "study2",pt.size = 0.001)
+ggsave(filename = "AMA_plot_250512/AMA_additional_analysis_FeaturePlot_cardi2_250517.pdf",
+       width = 12.98,height = 21.89)
