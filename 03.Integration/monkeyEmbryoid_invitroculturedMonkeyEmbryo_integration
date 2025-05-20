@@ -1,3 +1,438 @@
-#This script integrate human embryo CS7 dataset (Tyser et al., 2021) and human gastruloid at 24hr
-#Link to human embryo CS7 dataset is provided in https://shendure-web.gs.washington.edu/content/members/hGastruloid_website/public/
-#Human gastrloid datasets from this paper are provided at National Center for Biotechnology Information (NCBI) Gene Expression Omnibus (GEO) under accession numbers GSE208369
+#################################################################################################
+#This script integrate in vitro cultured Monkey embryos (Zeng et al., 2023) and monkey embryoid
+#################################################################################################
+
+library(Seurat)
+library(harmony)
+
+sc_list <- readRDS("../../cr6ncbi_d17tod28_nFatureRNA1000_Singlet_nCountRNA30000.rds")
+sc_list <- subset(sc_list, orig.ident %in% 
+                    c("d17_1_cr6","d18_1_cr6","d21_1_cr6","d22_1_cr6",
+                      "d23_1","d25_1_cr6","d25_2_cr6"))
+new <- sc_list
+new_counts <- new@assays$RNA@counts
+new_meta <- new@meta.data
+
+
+# load monkey ex vivo data
+load("../../public_data/Figure2_Allcells.Rdata")
+gong <- Vitro
+rm(Vitro);gc()
+gong_counts <-  gong@assays$RNA@counts
+gong_meta <- gong@meta.data
+
+sharedGs <- intersect(row.names(new_counts), row.names(gong_counts) )
+
+new_counts <- new_counts[sharedGs,]
+gong_counts <- gong_counts[sharedGs,]
+
+new_meta_sub <- new_meta[,c(1,2,3,9)]
+colnames(new_meta_sub) <- c("sample","nCount_RNA","nFeature_RNA","annotation")
+new_meta_sub$study <- rep("blastoid",nrow(new_meta_sub))
+
+gong_meta_sub <- gong_meta[,c(4,2,3,5)]
+colnames(gong_meta_sub) <- c("sample","nCount_RNA","nFeature_RNA","annotation")
+gong_meta_sub$study <- rep("exvivo",nrow(gong_meta_sub))
+
+
+blastoid <- CreateSeuratObject(counts = new_counts,meta.data = new_meta_sub)
+blastoid$orig.ident <- blastoid$sample
+Idents(blastoid) <- 'orig.ident'
+
+exvivo <- CreateSeuratObject(counts = gong_counts,meta.data = gong_meta_sub)
+exvivo$orig.ident <- exvivo$sample
+Idents(exvivo) <- 'orig.ident'
+levels(exvivo) <- sort(unique(exvivo$orig.ident))
+
+sc_list =list(blastoid=blastoid, exvivo=exvivo)
+save(sc_list, file = "raw_mfas_blastoid_d17-d25-2nod22-2_exvivo_sc_list.RData")
+
+
+rm(list=ls())
+load("raw_mfas_blastoid_d17-d25-2nod22-2_exvivo_sc_list.RData")
+
+
+sc_list <- lapply(X = sc_list, FUN = function(x) {
+  x <- NormalizeData(x)
+  x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 3000)
+  return(x)
+})
+
+features <- SelectIntegrationFeatures(object.list = sc_list, nfeatures = 3000)
+sc_anchors <- FindIntegrationAnchors(object.list = sc_list, anchor.features = features)
+save(sc_anchors, file = "mfas_blastoid_d17-d25-2nod22-2_exvivo_sc_anchors.RData")
+
+# this command creates an 'integrated' data assay
+sc_combined <- IntegrateData(anchorset = sc_anchors)
+save(sc_combined,file="mfas_blastoid_d17-d25-2nod22-2_exvivo_sc_combined0.RData")
+
+
+
+library(Seurat)
+library(harmony)
+library(ggplot2)
+library(cowplot)
+library(SCpubr)
+
+setwd("/data/embryo_dev/myprocess/integrate_cr6ncbi_d17-1_d25-2_nod22-2/blastoid_exvivo/")
+
+load("mfas_blastoid_d17-d25-2nod22-2_exvivo_sc_combined0.RData")
+alldata <- sc_combined
+rm(sc_combined);gc()
+
+alldata_meta <- alldata@meta.data
+
+load("/data/embryo_dev/myprocess/integrate_cr6ncbi_d17-1_d25-2_nod22-2/vstCCA/pc20/pc20_d17-1_d25-2_nod22-2_seuobj_withClusterInfo_meta.RData")
+#sc_combined_meta$integrated_snn_res.1 <- paste0("blastoid_", sc_combined_meta$integrated_snn_res.1)
+table(sc_combined_meta$integrated_snn_res.1 )
+
+alldata_meta$annotation[match(row.names(sc_combined_meta), row.names(alldata_meta))] <- as.character(sc_combined_meta$integrated_snn_res.1 )
+alldata_meta$annotation <- paste0(alldata_meta$study,"_", alldata_meta$annotation)
+table(alldata_meta$annotation)
+
+alldata$annotation <- alldata_meta$annotation
+
+rm(alldata_meta)
+
+# Scale the integrated data, perform PCA, and generate an elbow plot for dimensionality estimation
+alldata <- ScaleData(alldata)
+alldata <- RunPCA(object = alldata, npcs = 100)
+ElbowPlot(alldata, ndims = 100)
+ggsave(filename = "blastoid_exvivo_ElbowPlot.png", width = 7.68, height = 3.98, bg = "white")
+
+# UMAP Plotting and Clustering
+# -----------------------------
+# Setting parameters for UMAP analysis
+pcause = 100  # Number of dimensions to consider before analysis
+alldata <- RunUMAP(object = alldata, dims = 1:pcause)
+#alldata <- RunTSNE(object = alldata, dims = 1:pcause)
+alldata <- FindNeighbors(object = alldata, dims = 1:pcause)
+
+alldata <- FindClusters(object = alldata, resolution = 0.4)
+
+toplist <- names(alldata$study[alldata$study == "blastoid"])
+
+p1 <- DimPlot(object = alldata, reduction = "umap", order = toplist, 
+              raster = F, group.by = "study", pt.size = 0.0001)
+p2 <- DimPlot(object = alldata, reduction = "umap", label = T,
+              raster = F, group.by = "integrated_snn_res.0.4", pt.size = 0.0001)
+pp <- p1+p2
+ggsave(pp, filename = "blastoidD17-1_D25-2_exvivo_noharmony_res04.umap.png",
+       width = 12.69, height=4.89)
+
+
+save(alldata, file="blastoidD17-1_D25-2_exvivo_noharmony_withCluster.RData")
+
+# Harmony Integration
+# -------------------
+# Running Harmony algorithm for data integration across different conditions
+pdf(file = "alldata_harmony_use.pdf", width = 8, height = 6)
+alldata_harmony <- RunHarmony(alldata, group.by.vars = "study", plot_convergence = TRUE)
+dev.off()
+
+rm(alldata);gc()
+
+# Plotting Harmony integrated data and saving the output
+
+DimPlot(object = alldata_harmony, raster = FALSE,  reduction = "harmony", group.by = "study", pt.size = 0.01)
+ggsave(filename = "alldata_harmony_cluster.png", width = 8, height = 6)
+
+# Further UMAP analysis on Harmony integrated data
+alldata_harmony <- alldata_harmony %>% RunUMAP(reduction = "harmony", dims = 1:50) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:30) %>%
+  FindClusters(resolution = 0.5) %>%
+  identity()
+
+
+DimPlot(object = alldata_harmony, 
+        reduction = "umap",order = toplist, 
+        raster = F, group.by = "study", pt.size = 0.01)
+ggsave(filename = "alldata_harmony_cluster_colByStudy.png", width = 8, height = 6)
+
+
+# Saving UMAP plots of Harmony integrated data
+DimPlot(object = alldata_harmony, reduction = "umap", raster = F, label = TRUE, pt.size = 0.01)
+ggsave(filename = "alldata_harmony_cluster_colByRes05cluster.png", width = 8, height = 6)
+
+
+alldata_harmony <- FindClusters(alldata_harmony,resolution = 0.6) %>% identity()
+DimPlot(object = alldata_harmony, reduction = "umap", 
+        raster = F, label = TRUE, pt.size = 0.01)
+ggsave(filename = "alldata_harmony_cluster_colByRes06cluster.png", width = 8, height = 6)
+
+alldata_harmony <- FindClusters(alldata_harmony,resolution = 0.7) %>% identity()
+DimPlot(object = alldata_harmony, reduction = "umap", 
+        raster = F, label = TRUE, pt.size = 0.01)
+ggsave(filename = "alldata_harmony_cluster_colByRes07cluster.png", width = 8, height = 6)
+
+alldata_harmony <- FindClusters(alldata_harmony,resolution = 0.8) %>% identity()
+DimPlot(object = alldata_harmony, reduction = "umap", 
+        raster = F, label = TRUE, pt.size = 0.01)
+ggsave(filename = "alldata_harmony_cluster_colByRes08cluster.png", width = 8, height = 6)
+
+alldata_harmony <- FindClusters(alldata_harmony,resolution = 0.9) %>% identity()
+DimPlot(object = alldata_harmony, reduction = "umap", 
+        raster = F, label = TRUE, pt.size = 0.01)
+ggsave(filename = "alldata_harmony_cluster_colByRes09cluster.png", width = 8, height = 6)
+
+alldata_harmony <- FindClusters(alldata_harmony,resolution = 1) %>% identity()
+DimPlot(object = alldata_harmony, reduction = "umap", 
+        raster = F, label = TRUE, pt.size = 0.01)
+ggsave(filename = "alldata_harmony_cluster_colByRes1cluster.png", width = 8, height = 6)
+
+
+options(max.print = 10000)
+table(alldata_harmony$annotation,alldata_harmony$integrated_snn_res.0.6)
+
+save(alldata_harmony, file="mfas_blastoid_D17-1-D25-2_exvivo_alldata_harmony.RData")
+
+
+alldata_harmony_meta <- alldata_harmony@meta.data
+save(alldata_harmony_meta, file = "mfas_blastoid_D17-1-D25-2_exvivo_alldata_harmony_metainfo.RData")
+
+library(SCpubr)
+studyClusters <- unique(alldata_harmony$annotation)
+for(i in 1:length(studyClusters)){
+  pp <- do_DimPlot(alldata_harmony, raster = F, group.by = "annotation",idents.keep = studyClusters[i],pt.size=0.001)
+  ggsave(pp ,filename=paste0("mfas_blastoid_D17-1-D25-2_exvivo_alldata_harmony_",studyClusters[i],"_umap.png"), width = 8, height = 6)
+}
+
+res06Clusters <- unique(alldata_harmony$integrated_snn_res.0.6)
+for(i in 1:length(res06Clusters)){
+  pp <- do_DimPlot(alldata_harmony, raster = F, group.by = "integrated_snn_res.0.6",idents.keep = res06Clusters[i],pt.size=0.001)
+  ggsave(pp ,filename=paste0("mfas_blastoid_D17-1-D25-2_exvivo_alldata_harmony_res08Cluster",res06Clusters[i],"_umap.png"), width = 8, height = 6)
+}
+
+save.image("blastoid_D17-1-D25-2_exvivo_harmony_integrated.RData")
+
+# Adjusting metadata for Harmony data
+alldata_harmony@meta.data$study <- factor(alldata_harmony@meta.data$study, levels = c("blastoid",  "exvivo"))
+toplist <- names(alldata_harmony$study[alldata_harmony$study == "blastoid"])
+
+# Customized UMAP plots with specific color schemes
+# Changing colors of the clusters and generating multiple UMAP plots
+pp <- DimPlot(object = alldata_harmony, reduction = "umap", cols = c("#2979A9", "#C04844"), raster = FALSE, order = toplist, group.by = "study", pt.size = 0.001) +labs(title = "")
+#pp[[1]]$layers[[1]]$mapping$alpha= 0.7
+ggsave(pp, filename = "alldata_harmony_cluster_changecolor_threecolor1.pdf", width = 8, height = 6)
+ggsave(pp, filename = "alldata_harmony_cluster_changecolor_threecolor1.png", width = 8, height = 6)
+
+
+pp <- do_DimPlot(alldata_harmony, group.by = "study", idents.keep = "exvivo", 
+                 raster = FALSE,
+                 pt.size = 0.001, colors.use = c("exvivo"="#C04844"),
+                 na.value = "lightgrey",
+                 legend.position = "none")
+ggsave(pp, filename = "alldata_harmony_cluster_changecolor_threecolor3.pdf", width = 8, height = 6)
+
+pp <- do_DimPlot(alldata_harmony, group.by = "study", idents.keep = "exvivo", 
+                 raster = FALSE,
+                 pt.size = 0.001, colors.use = c("exvivo"="#2979A9"),
+                 na.value = "lightgrey",
+                 legend.position = "none")
+ggsave(pp, filename = "alldata_harmony_cluster_changecolor_threecolor4.pdf", width = 8, height = 6)
+
+
+library(Seurat)
+library(SCpubr)
+library(ggplot2)
+library(cowplot)
+library(dplyr)
+
+DimPlot(alldata_harmony, raster = F, pt.size = 0.001,  group.by = "integrated_snn_res.0.6", label = T)
+
+mergedAnno <- alldata_harmony$integrated_snn_res.0.6
+mergedAnno <- recode(mergedAnno, 
+                     "0"="Al", "1"="ys.Meso","2"="Mes","3"="Progenitors","4"="LPM",
+                     "5"="LPM","6"="Amnion","7"="CTB","8"="Cardi.","9"="EXM",
+                     "10"="ys.Meso","11"="DE/VE","12"="Epidermis","13"="Gut","14"="LPM",
+                     "15"="Border","16"="Al","17"="EC","18"="STB","19"="Progenitors",
+                     "20"="EVT","21"="PS/PM","22"="ys.Endo","23"="CTB","24"="PGC",
+                     "25"="Blood")
+mergedAnno <- factor(mergedAnno, 
+                     levels = c("Progenitors", "PS/PM","PGC",
+                                "LPM","EXM","Mes","Al","Cardi.","ys.Meso",
+                                "Border","Epidermis","Amnion",
+                                "DE/VE","Gut","ys.Endo",
+                                "STB","EVT","CTB",
+                                "EC","Blood") )
+alldata_harmony$mergedAnno <- mergedAnno
+
+mergedAnno_cols <- c("#605546","#D5BB9D","#926358",
+                     "#214781","#DD90B4","#969696","#507FA8","#1B1B1B","#CD6697",
+                     "#CAE5F5","#BF7A33","#C1A897",
+                     "#806DA8","#EBB78D","#BC9C71",
+                     "#E9BEC9","#DF873E", "#99BB98",
+                     "#374D2C","#D9987C")
+ 
+alpha.use = 0.6                    
+p <- do_DimPlot(alldata_harmony, raster = F, pt.size = 0.001, label = F, 
+                colors.use =  c("Progenitors"="#605546","PS/PM"="#D5BB9D","PGC"="#926358",
+                                "LPM"="#214781","EXM"="#DD90B4","Mes"="#969696","Al"="#507FA8","Cardi."="#1B1B1B","ys.Meso"="#CD6697",
+                                "Border"="#CAE5F5","Epidermis"="#BF7A33","Amnion"="#C1A897",
+                                "DE/VE"="#806DA8","Gut"="#EBB78D","ys.Endo"="#BC9C71",
+                                "STB"="#E9BEC9","EVT"="#DF873E", "CTB"="#99BB98",
+                                "EC"="#374D2C","Blood"="#D9987C"),
+                group.by = "mergedAnno")
+p$layers[[1]]$mapping$alpha <- alpha.use
+p <- p + scale_alpha_continuous(range = alpha.use, guide = F)               
+
+save_plot("blastoid_pc20_d17-1_d25-2_nod22-2_exvivo_celltype_UMAP_clustering.png", p, base_height = 8, base_aspect_ratio = 1.1, base_width = NULL, dpi=600)
+save_plot("blastoid_pc20_d17-1_d25-2_nod22-2_exvivo_celltype_UMAP_clustering.pdf", p, base_height = 8, base_aspect_ratio = 1.1, base_width = NULL, dpi=600)
+
+
+umap_theme <- theme( 
+  axis.line=element_blank(), 
+  axis.text.x=element_blank(), 
+  axis.text.y=element_blank(), 
+  axis.ticks=element_blank(), 
+  axis.title.x=element_blank(), 
+  axis.title.y=element_blank(), 
+  panel.background=element_blank(), 
+  panel.border=element_blank(), 
+  panel.grid.major=element_blank(), 
+  panel.grid.minor=element_blank() 
+) 
+
+alpha.use=0.6
+toplist <- names(alldata_harmony$study[alldata_harmony$study == "blastoid"])
+pp <- DimPlot(object = alldata_harmony, reduction = "umap", cols = c( "#E9BEC9","#CAE5F5"), raster = FALSE, 
+              order = toplist, group.by = "study", pt.size = 0.001) +labs(title = "")+umap_theme
+pp$layers[[1]]$mapping$alpha <- alpha.use
+pp <- pp + scale_alpha_continuous(range = alpha.use, guide = F)
+
+save_plot("alldata_harmony_cluster_changecolor_threecolor3.png", 
+          pp, base_height = 8, base_aspect_ratio = 1.2, base_width = NULL, dpi=600)
+
+
+load("/data/embryo_dev/myprocess/integrate_cr6ncbi_d17-1_d25-2_nod22-2/blastoid_exvivo/mfas_blastoid_D17-1-D25-2_exvivo_alldata_harmony.RData")
+
+
+library(Seurat)
+library(SeuratDisk)
+
+DefaultAssay(alldata_harmony) <- "RNA"
+alldata_harmony_meta <- alldata_harmony@meta.data
+alldata_harmony_meta <- alldata_harmony_meta[,c('orig.ident','mergedAnno','study')]
+colnames(alldata_harmony_meta) <- c("sample","cluster",'group')
+alldata_harmony_meta$sample <- stringr::str_split(alldata_harmony_meta$sample,pattern = "_cr6",simplify = T)[,1]
+
+write.csv(alldata_harmony_meta,
+          file="/data/embryo_dev/myprocess/integrate_cr6ncbi_d17-1_d25-2_nod22-2/blastoid_exvivo/mfas_blastoid_D17-1-D25-2_exvivo_alldata_harmony_metadf_col3.csv",
+          quote=FALSE)
+
+
+
+SaveH5Seurat(alldata_harmony,filename="/data/embryo_dev/myprocess/integrate_cr6ncbi_d17-1_d25-2_nod22-2/blastoid_exvivo/mfas_blastoid_D17-1-D25-2_exvivo_alldata_harmony.h5seurat", overwrite = TRUE)
+
+#数据转为最终h5ad格式
+Convert("/data/embryo_dev/myprocess/integrate_cr6ncbi_d17-1_d25-2_nod22-2/blastoid_exvivo/mfas_blastoid_D17-1-D25-2_exvivo_alldata_harmony.h5seurat", 
+        dest = "/data/embryo_dev/myprocess/integrate_cr6ncbi_d17-1_d25-2_nod22-2/blastoid_exvivo/mfas_blastoid_D17-1-D25-2_exvivo_alldata_harmony.h5ad", 
+        overwrite = TRUE)
+
+
+
+# 
+library(speckle)
+library(SingleCellExperiment)
+library(scater)
+
+allcounts <- alldata_harmony@assays$RNA@counts
+sce_all <- SingleCellExperiment(assays = list(counts = allcounts))
+sce_all$sample <- alldata_harmony_meta$sample
+sce_all$group <- alldata_harmony_meta$group
+sce_all$cluster <- alldata_harmony_meta$cluster
+
+rm(allcounts, alldata, alldata_harmony)
+gc()
+
+# Visualise the data
+sce_all <- scater::logNormCounts(sce_all)
+sce_all <- scater::runPCA(sce_all)
+sce_all <- scater::runUMAP(sce_all)
+
+pca1 <- scater::plotReducedDim(sce_all, dimred = "PCA", colour_by = "cluster") +
+  ggtitle("Cell Type")
+pca2 <- scater::plotReducedDim(sce_all, dimred = "PCA", colour_by = "group") +
+  ggtitle("Study")
+pca1 + pca2
+
+
+umap1 <- scater::plotReducedDim(sce_all, dimred = "UMAP", 
+                                colour_by = "cluster") + 
+  ggtitle("Cell Type")
+umap2 <- scater::plotReducedDim(sce_all, dimred = "UMAP", colour_by = "group") +
+  ggtitle("Study")
+umap1 + umap2
+
+
+# Test for differences 
+
+# Perform logit transformation
+propeller(sce_all)
+# Perform arcsin square root transformation
+propeller(sce_all, transform="asin")
+# 
+propeller(clusters=sce_all$cluster, sample=sce_all$sample, group=sce_all$group)
+
+
+setwd("/data/embryo_dev/myprocess/integrate_cr6ncbi_d17-1_d25-2_nod22-2/blastoid_exvivo/")
+
+load("/data/embryo_dev/myprocess/integrate_cr6ncbi_d17-1_d25-2_nod22-2/blastoid_exvivo/blastoidD17-1_D25-2_exvivo_noharmony_withCluster.RData")
+DefaultAssay(alldata)
+# UMAP on integrated Assay
+p1 <- DimPlot(alldata, reduction = "pca",
+              raster = FALSE, 
+              cols = c("lightgrey","#B74643"),
+              pt.size = 0.1,group.by = "study") + labs(title = "") +NoLegend()
+ggsave(p1, filename="alldata_Integratedassay_pca.pdf",
+       height=3.58, width=3.98)
+p2 <- DimPlot(alldata, reduction = "umap",
+              raster = FALSE,
+              cols = c("lightgrey","#B74643"),
+              pt.size = 0.1,group.by = "study") + labs(title = "") +NoLegend()
+ggsave(p2, filename="alldata_Integratedassay_umap.pdf",
+       height=3.58, width=3.98)
+p3 <- DimPlot(alldata, reduction = "umap",
+              raster = FALSE, label = TRUE,
+              pt.size = 0.1,group.by = "integrated_snn_res.0.4") +NoLegend() + labs(title = "")
+pp <- cowplot::plot_grid(p1,p2,p3, ncol=3, rel_widths = c(1,1,1))
+ggsave(pp, filename="alldata_Integratedassay_pca_umap.pdf",
+       height=3.58, width=12.68)
+
+# PCA plot of RNA assay
+DefaultAssay(alldata) <- "RNA"
+alldata <- NormalizeData(alldata)
+alldata <- FindVariableFeatures(alldata, selection.method = "vst", nfeatures = 3000)
+alldata <- ScaleData(alldata)
+alldata <- RunPCA(alldata, npcs = 100)
+alldata <- RunUMAP(alldata,dims = 1:100, reduction = "pca")
+p4 <- DimPlot(alldata, reduction = "pca",
+              raster = FALSE, 
+              cols = c("lightgrey","#B74643"),
+              pt.size = 0.1,group.by = "study") + labs(title = "")
+p9 <- DimPlot(alldata, reduction = "umap",
+              raster = FALSE, 
+              cols = c("lightgrey","#B74643"),
+              pt.size = 0.1,group.by = "study") + labs(title = "")
+pp <- p4|p9
+ggsave(pp, filename="alldata_RNAassay_pca_umap.pdf",
+       height=3.48, width=9.98)
+
+rm(alldata)
+gc()
+
+load("/data/embryo_dev/myprocess/integrate_cr6ncbi_d17-1_d25-2_nod22-2/blastoid_exvivo/mfas_blastoid_D17-1-D25-2_exvivo_alldata_harmony.RData")
+DefaultAssay(alldata_harmony)
+#
+p5 <- DimPlot(alldata_harmony, reduction = "harmony",
+              raster = FALSE, cols = c("lightgrey","#B74643"),
+              pt.size = 0.1,group.by = "study") + labs(title = "")+NoLegend()
+ggsave(p5, filename="alldata_harmony_harmonyPlot.pdf",height=3.58, width=3.98)
+p6 <- DimPlot(alldata_harmony, reduction = "umap",
+              raster = FALSE, cols = c("lightgrey","#B74643"),
+              pt.size = 0.1,group.by = "study") + labs(title = "")
+p7 <- DimPlot(alldata_harmony, reduction = "umap",
+              raster = FALSE, label = TRUE,
+              pt.size = 0.1,group.by = "integrated_snn_res.0.4") +NoLegend()
+ggsave(p7, filename="alldataharmony_res04_umap.pdf",
+       height=3.58, width=3.98)
