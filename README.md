@@ -1,8 +1,7 @@
 # MonkeyEmbryoidscRNA-seq
-Code for processing scRNA-seq of monkey embryoids
+Analysis codes used for processing scRNA-seq of monkey embryoids
 
-_Modeling late gastrulation in stem-cell derived monkey embryo models
-s_
+_Modeling late gastrulation in stem-cell derived monkey embryo models_
 
 
 
