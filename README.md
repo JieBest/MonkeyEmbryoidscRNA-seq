@@ -43,4 +43,4 @@ _**Modeling late gastrulation in stem-cell derived monkey embryo models**_.
 * clusterProfiler (version 3.12.0)
 
 ## Contact
-For questions and requests, please contact [Jie Li](lijie_bioinfor@ion.ac.cn)
+For questions and requests, please contact Jie Li (lijie_bioinfor@ion.ac.cn)
