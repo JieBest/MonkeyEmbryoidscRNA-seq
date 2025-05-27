@@ -10,3 +10,35 @@ _**Modeling late gastrulation in stem-cell derived monkey embryo models**_.
 
 4.TBXT-KO: The code in R to perform QC and clustering of TBXT-KO D17 embryoid. 
 
+
+## Downloading the data
+* The raw scRNA-seq data of monkey embryoids generated in this study can be viewed in NODE under the accession number OEP005191 (https://www.biosino.org/node/project/detail/OEP005191)
+
+* Customizable visualizations and analyses of our data can be executed at https://jiefrankli.shinyapps.io/monkey_embryoid_scexp/
+
+
+## Operation system & Hardware requirements
+* Ubuntu 20.04.6 LTS
+* For optimal performance, we recommended and used a computer with the following specs for testing: AMD Ryzen Threadripper 2950X 24-Core Processor 3.50 GHz and RAM 128 GB.
+
+## Installation guide
+* R packages required for the pipeline can be installed from CRAN (https://cran.r-project.org/) using the install.packages() function, or from Bioconductor (https://bioconductor.org/) using the BiocManager::install() function, or from Github (https://github.com/) using the devtools::install_github() function.
+
+## Required packages
+* CellRanger (version 6.0.2)
+* R (version 4.3.2)
+* Seurat (version 4.3.0)
+* DoubletFinder (version 2.0.3)
+* harmony (version 1.2.0)
+* SingleR (version 2.2.0)
+* BiocParallel (version 1.28.3)
+* clustertree (version 0.5.1)
+* SCpubr (version2.0.2.9000)
+* dplyr (version 1.1.4)
+* Reshape2 (version 1,4,4)
+* ggplot2 (version 3.4.2)
+* cowplot (version 1.1.3)
+* RColorBrewer (version 1.1-3)
+* cols4all (version 0.6)
+* clusterProfiler (version 3.12.0)
+
